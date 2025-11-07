@@ -31,9 +31,10 @@ jobs:
         with:
           node-version: 20
 
-      - name: Installa Playwright
+      - name: Installa Playwright e browser Chromium
         run: |
           npm install playwright@latest
+          npx playwright install --with-deps
 
       - name: Scarica playlist tramite browser (Playwright)
         run: |
@@ -49,24 +50,21 @@ jobs:
 
             // Naviga alla pagina e attende che Cloudflare termini il controllo
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-            await page.waitForTimeout(8000); // attesa di 8 secondi per sicurezza
+            await page.waitForTimeout(12000); // attesa 12s per sicurezza
 
-            // Alcune volte il file parte in automatico come download,
-            // altre volte è mostrato come testo (m3u). Proviamo entrambe.
+            // Prova a leggere contenuto (alcune volte è testo m3u, altre file)
             let content = '';
             try {
               content = await page.evaluate(() => document.body.innerText);
             } catch (e) {
-              console.log('Nessun body text, potrebbe essere un download diretto.');
+              console.log('Nessun body text trovato, provo download diretto...');
             }
 
-            // Se il contenuto è vuoto, proviamo a scaricare il file effettivo
             if (!content || content.trim().length < 10) {
               const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
               content = await response.text();
             }
 
-            // Salva su file
             fs.writeFileSync(output, content.trim(), 'utf8');
             console.log(`Salvato ${output} (${content.length} bytes)`);
 
