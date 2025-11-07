@@ -1,10 +1,10 @@
-name: Update AcePlay playlists
+name: Update AcePlay playlists (Playwright)
 
 on:
   schedule:
     - cron: '0 10 * * *'   # 12:00 CEST (UTC+2)
     - cron: '0 11 * * *'   # 12:00 CET  (UTC+1)
-  workflow_dispatch: # permette di avviare manualmente il workflow per test
+  workflow_dispatch: # per avvio manuale
 
 permissions:
   contents: write
@@ -12,57 +12,81 @@ permissions:
 jobs:
   update-playlists:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Check that now is 12:00 in Europe/Rome
+      - name: Controlla che ora sia 12:00 a Roma
         run: |
           ROME_HOUR=$(TZ="Europe/Rome" date +%H)
-          echo "Europe/Rome hour: $ROME_HOUR"
+          echo "Ora locale (Europe/Rome): $ROME_HOUR"
           if [ "$ROME_HOUR" != "12" ]; then
-            echo "Non è mezzogiorno in Europe/Rome — esco (nessuna azione)."
+            echo "Non è mezzogiorno in Italia — uscita."
             exit 0
           fi
 
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          persist-credentials: true
+          node-version: 20
 
-      - name: Download playlists
+      - name: Installa Playwright
         run: |
-          set -e
-          echo "Scarico playlist con intestazioni browser-like..."
+          npm install playwright@latest
 
-          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-
-          # Scarica la playlist generale
-          curl -fsSL "https://search-ace.stream/playlist" \
-            -H "User-Agent: $UA" \
-            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-            -H "Referer: https://search-ace.stream/" \
-            -o aceplay.m3u
-
-          # Scarica la playlist sport
-          curl -fsSL "https://search-ace.stream/playlist?category=sport" \
-            -H "User-Agent: $UA" \
-            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-            -H "Referer: https://search-ace.stream/" \
-            -o aceplaysport.m3u
-
-          echo "Download completato. Dimensioni file:"
-          ls -lh aceplay.m3u aceplaysport.m3u || true
-
-      - name: Commit and push only if changed
+      - name: Scarica playlist tramite browser (Playwright)
         run: |
-          set -e
+          node <<'EOF'
+          import { chromium } from 'playwright';
+          import fs from 'fs';
+
+          async function downloadPlaylist(url, output) {
+            console.log(`Apro: ${url}`);
+            const browser = await chromium.launch({ headless: true });
+            const context = await browser.newContext();
+            const page = await context.newPage();
+
+            // Naviga alla pagina e attende che Cloudflare termini il controllo
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForTimeout(8000); // attesa di 8 secondi per sicurezza
+
+            // Alcune volte il file parte in automatico come download,
+            // altre volte è mostrato come testo (m3u). Proviamo entrambe.
+            let content = '';
+            try {
+              content = await page.evaluate(() => document.body.innerText);
+            } catch (e) {
+              console.log('Nessun body text, potrebbe essere un download diretto.');
+            }
+
+            // Se il contenuto è vuoto, proviamo a scaricare il file effettivo
+            if (!content || content.trim().length < 10) {
+              const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+              content = await response.text();
+            }
+
+            // Salva su file
+            fs.writeFileSync(output, content.trim(), 'utf8');
+            console.log(`Salvato ${output} (${content.length} bytes)`);
+
+            await browser.close();
+          }
+
+          await downloadPlaylist('https://search-ace.stream/playlist', 'aceplay.m3u');
+          await downloadPlaylist('https://search-ace.stream/playlist?category=sport', 'aceplaysport.m3u');
+          EOF
+
+      - name: Commit e push se ci sono modifiche
+        run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           git add aceplay.m3u aceplaysport.m3u
 
           if git diff --staged --quiet; then
-            echo "Nessuna modifica nelle playlist — niente da commitare."
+            echo "Nessuna modifica da salvare."
             exit 0
           fi
 
-          git commit -m "Aggiorna playlist: aceplay.m3u & aceplaysport.m3u (eseguito da GitHub Actions)"
+          git commit -m "Aggiornamento automatico playlist (Playwright)"
           git push
