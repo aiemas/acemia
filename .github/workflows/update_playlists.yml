@@ -13,65 +13,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v3
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 20
-
-      - name: Install Playwright and deps
+      - name: Download playlists via Hugging Face proxy
         run: |
-          npm install playwright
-          npx playwright install --with-deps chromium
+          echo "Scarico playlist principale..."
+          curl -L "https://aiemas-acemia-proxy.hf.space" -o aceplay.m3u
 
-      - name: Download playlists with Playwright (waiting for Cloudflare)
-        run: |
-          cat << 'EOF' > download.js
-          const { chromium } = require('playwright');
-          const fs = require('fs');
+          echo "Scarico playlist sport..."
+          curl -L "https://aiemas-acemia-proxy.hf.space?category=sport" -o aceplaysport.m3u
 
-          async function downloadPlaylist(url, outputFile) {
-            const browser = await chromium.launch({ headless: true });
-            const context = await browser.newContext();
-            const page = await context.newPage();
-
-            console.log(`Apro: ${url}`);
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 180000 });
-
-            // Attende che la pagina Cloudflare si completi (max 90 secondi)
-            console.log("Attendo completamento verifica Cloudflare...");
-            await page.waitForTimeout(60000); // 60 secondi
-            // Aspetta che il titolo cambi o il body non contenga più "Verify you are human"
-            for (let i = 0; i < 5; i++) {
-              const html = await page.content();
-              if (!html.includes("Verify you are human") && !html.includes("Cloudflare")) {
-                break;
-              }
-              console.log("Cloudflare ancora attivo, attendo altri 15s...");
-              await page.waitForTimeout(15000);
-            }
-
-            // Ora tenta di riscaricare la playlist diretta (dopo la verifica)
-            const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 120000 });
-            const content = await response.text();
-
-            fs.writeFileSync(outputFile, content);
-            console.log(`Salvato ${outputFile} (${content.length} bytes)`);
-
-            await browser.close();
-          }
-
-          (async () => {
-            await downloadPlaylist('https://search-ace.stream/playlist', 'aceplay.m3u');
-            await downloadPlaylist('https://search-ace.stream/playlist?category=sport', 'aceplaysport.m3u');
-          })();
-          EOF
-
-          node download.js
+          echo "Contenuti scaricati:"
+          ls -lh *.m3u
+          head -n 10 aceplay.m3u || true
 
       - name: Commit and push changes
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add *.m3u
-          git commit -m "Aggiornamento playlist automatico" || echo "Nessuna modifica"
+          git commit -m "Aggiornamento automatico playlist" || echo "Nessuna modifica"
           git push
