@@ -1,11 +1,9 @@
 name: Update AcePlay playlists
 
-# run daily at 10:00 UTC and 11:00 UTC (covers CEST/CET) but the job will
-# proceed only when local Europe/Rome hour is 12
 on:
   schedule:
-    - cron: '0 10 * * *'   # corresponds to 12:00 CEST (UTC+2)
-    - cron: '0 11 * * *'   # corresponds to 12:00 CET  (UTC+1)
+    - cron: '0 10 * * *'   # 12:00 CEST (UTC+2)
+    - cron: '0 11 * * *'   # 12:00 CET  (UTC+1)
   workflow_dispatch: # permette di avviare manualmente il workflow per test
 
 permissions:
@@ -17,7 +15,6 @@ jobs:
     steps:
       - name: Check that now is 12:00 in Europe/Rome
         run: |
-          # otteniamo l'ora locale Europe/Rome (00-23)
           ROME_HOUR=$(TZ="Europe/Rome" date +%H)
           echo "Europe/Rome hour: $ROME_HOUR"
           if [ "$ROME_HOUR" != "12" ]; then
@@ -33,9 +30,24 @@ jobs:
       - name: Download playlists
         run: |
           set -e
-          echo "Scarico playlist..."
-          curl -fsSL "https://search-ace.stream/playlist" -o aceplay.m3u
-          curl -fsSL "https://search-ace.stream/playlist?category=sport" -o aceplaysport.m3u
+          echo "Scarico playlist con intestazioni browser-like..."
+
+          UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+          # Scarica la playlist generale
+          curl -fsSL "https://search-ace.stream/playlist" \
+            -H "User-Agent: $UA" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+            -H "Referer: https://search-ace.stream/" \
+            -o aceplay.m3u
+
+          # Scarica la playlist sport
+          curl -fsSL "https://search-ace.stream/playlist?category=sport" \
+            -H "User-Agent: $UA" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+            -H "Referer: https://search-ace.stream/" \
+            -o aceplaysport.m3u
+
           echo "Download completato. Dimensioni file:"
           ls -lh aceplay.m3u aceplaysport.m3u || true
 
@@ -45,15 +57,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Aggiungi i file
           git add aceplay.m3u aceplaysport.m3u
 
-          # Se non ci sono differenze, esci
           if git diff --staged --quiet; then
             echo "Nessuna modifica nelle playlist — niente da commitare."
             exit 0
           fi
 
-          # Commit e push
           git commit -m "Aggiorna playlist: aceplay.m3u & aceplaysport.m3u (eseguito da GitHub Actions)"
           git push
