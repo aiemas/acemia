@@ -1,90 +1,77 @@
-name: Update AcePlay playlists (Playwright)
+name: Daily playlist update
 
 on:
   schedule:
-    - cron: '0 10 * * *'   # 12:00 CEST (UTC+2)
-    - cron: '0 11 * * *'   # 12:00 CET  (UTC+1)
-  workflow_dispatch: # per avvio manuale
-
-permissions:
-  contents: write
+    - cron: "0 11 * * *"  # 12:00 ora italiana (CET = UTC+1)
+  workflow_dispatch:
 
 jobs:
-  update-playlists:
+  update:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Controlla che ora sia 12:00 a Roma
-        run: |
-          ROME_HOUR=$(TZ="Europe/Rome" date +%H)
-          echo "Ora locale (Europe/Rome): $ROME_HOUR"
-          if [ "$ROME_HOUR" != "12" ]; then
-            echo "Non è mezzogiorno in Italia — uscita."
-            exit 0
-          fi
-
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v3
         with:
           node-version: 20
 
-      - name: Installa Playwright e browser Chromium
+      - name: Install Playwright and deps
         run: |
-          npm install playwright@latest
-          npx playwright install --with-deps
+          npm install playwright
+          npx playwright install --with-deps chromium
 
-      - name: Scarica playlist tramite browser (Playwright)
+      - name: Download playlists with Playwright (waiting for Cloudflare)
         run: |
-          node <<'EOF'
-          import { chromium } from 'playwright';
-          import fs from 'fs';
+          cat << 'EOF' > download.js
+          const { chromium } = require('playwright');
+          const fs = require('fs');
 
-          async function downloadPlaylist(url, output) {
-            console.log(`Apro: ${url}`);
+          async function downloadPlaylist(url, outputFile) {
             const browser = await chromium.launch({ headless: true });
             const context = await browser.newContext();
             const page = await context.newPage();
 
-            // Naviga alla pagina e attende che Cloudflare termini il controllo
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-            await page.waitForTimeout(12000); // attesa 12s per sicurezza
+            console.log(`Apro: ${url}`);
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 180000 });
 
-            // Prova a leggere contenuto (alcune volte è testo m3u, altre file)
-            let content = '';
-            try {
-              content = await page.evaluate(() => document.body.innerText);
-            } catch (e) {
-              console.log('Nessun body text trovato, provo download diretto...');
+            // Attende che la pagina Cloudflare si completi (max 90 secondi)
+            console.log("Attendo completamento verifica Cloudflare...");
+            await page.waitForTimeout(60000); // 60 secondi
+            // Aspetta che il titolo cambi o il body non contenga più "Verify you are human"
+            for (let i = 0; i < 5; i++) {
+              const html = await page.content();
+              if (!html.includes("Verify you are human") && !html.includes("Cloudflare")) {
+                break;
+              }
+              console.log("Cloudflare ancora attivo, attendo altri 15s...");
+              await page.waitForTimeout(15000);
             }
 
-            if (!content || content.trim().length < 10) {
-              const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-              content = await response.text();
-            }
+            // Ora tenta di riscaricare la playlist diretta (dopo la verifica)
+            const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 120000 });
+            const content = await response.text();
 
-            fs.writeFileSync(output, content.trim(), 'utf8');
-            console.log(`Salvato ${output} (${content.length} bytes)`);
+            fs.writeFileSync(outputFile, content);
+            console.log(`Salvato ${outputFile} (${content.length} bytes)`);
 
             await browser.close();
           }
 
-          await downloadPlaylist('https://search-ace.stream/playlist', 'aceplay.m3u');
-          await downloadPlaylist('https://search-ace.stream/playlist?category=sport', 'aceplaysport.m3u');
+          (async () => {
+            await downloadPlaylist('https://search-ace.stream/playlist', 'aceplay.m3u');
+            await downloadPlaylist('https://search-ace.stream/playlist?category=sport', 'aceplaysport.m3u');
+          })();
           EOF
 
-      - name: Commit e push se ci sono modifiche
+          node download.js
+
+      - name: Commit and push changes
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add aceplay.m3u aceplaysport.m3u
-
-          if git diff --staged --quiet; then
-            echo "Nessuna modifica da salvare."
-            exit 0
-          fi
-
-          git commit -m "Aggiornamento automatico playlist (Playwright)"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.m3u
+          git commit -m "Aggiornamento playlist automatico" || echo "Nessuna modifica"
           git push
